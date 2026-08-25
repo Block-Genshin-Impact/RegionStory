@@ -3,13 +3,17 @@ package com.regionstory.client;
 import com.regionstory.RegionStoryMod;
 import com.regionstory.client.renderstates.ContinueIconElementRenderState;
 import com.regionstory.data.DialogueDefinition;
+import com.tp4.genshinlib.client.GILButton;
 import com.tp4.genshinlib.client.GILText;
+import me.shedaniel.autoconfig.AutoConfig;
 import net.fabricmc.fabric.api.client.networking.v1.ClientPlayNetworking;
 import net.minecraft.client.MinecraftClient;
 import net.minecraft.client.gui.Click;
 import net.minecraft.client.gui.DrawContext;
 import net.minecraft.client.gui.screen.Screen;
 import net.minecraft.client.input.KeyInput;
+import net.minecraft.sound.SoundCategory;
+import net.minecraft.sound.SoundEvents;
 import net.minecraft.text.Text;
 import net.minecraft.util.Identifier;
 import org.joml.Matrix3x2f;
@@ -22,7 +26,7 @@ public final class DialogueScreen extends Screen {
     private static final int TYPING_SPEED_MILLISECOND = 30;
     private static final int BODY_LINE_HEIGHT = 12;
     private static final int DIALOGUE_BASE_HEIGHT = 88;
-    private static final int DIALOGUE_MAX_HEIGHT = 208;
+    private static final float DIALOGUE_MIN_HEIGHT = 0.35f;
     private static final int DIALOGUE_SIDE_PADDING = 60;
     private static final int HOVER_DIAMOND_Y = 10;
 
@@ -42,11 +46,22 @@ public final class DialogueScreen extends Screen {
 
     private boolean typingAnimation = true;
     private long typingStartTime;
+    private long autoplayTime = -1;
+    private boolean hideUI = false;
+    private final List<HistoryItem> history = new ArrayList<>();
+
+    private final GILButton.ButtonManager buttonManager = GILButton.getManager();
 
     public DialogueScreen(DialogueDefinition dialogue, String entryId) {
         super(Text.literal("RegionStory"));
+
+        buttonManager.addButton("autoplay");
+        buttonManager.addButton("history");
+        buttonManager.addButton("hidden");
+
         this.hudVisible = MinecraftClient.getInstance().options.hudHidden;
         MinecraftClient.getInstance().options.hudHidden = true;
+
         CameraTransitionController.beginEnter(client);
         applyEntry(dialogue, entryId);
     }
@@ -59,16 +74,21 @@ public final class DialogueScreen extends Screen {
 
     @Override
     public boolean keyPressed(KeyInput input) {
-        if (input.getKeycode() == K_ESC) {
+        if (hideUI) {
+            hideUI = false;
+        }else if (input.getKeycode() == K_ESC) {
             ClientPlayNetworking.send(new RegionStoryMod.CloseDialoguePayload(dialogue.id));
         } else if (input.getKeycode() == K_F || input.getKeycode() == K_SPACE) {
             if (typingAnimation) {
                 typingAnimation = false;
             } else if (!dialogue.entry(entryId).options().isEmpty()) {
                 if (keyboardSelectedOption < 0 || input.getKeycode() != K_F) {return true;}
+                history.add(new HistoryItem(dialogue.entry(entryId).options().get(keyboardSelectedOption).text()));
                 ClientPlayNetworking.send(new RegionStoryMod.SelectOptionPayload(dialogue.id, entryId, keyboardSelectedOption));
+                playPopSound();
             } else {
                 ClientPlayNetworking.send(new RegionStoryMod.AdvanceDialoguePayload(dialogue.id, entryId));
+                playPopSound();
             }
         } else if (input.getKeycode() == K_W) {
             keyboardSelectionChange(1);
@@ -80,14 +100,33 @@ public final class DialogueScreen extends Screen {
 
     @Override
     public boolean mouseClicked(Click click, boolean doubled) {
-        if (typingAnimation) {
+        if (hideUI) {
+            hideUI = false;
+        } else if (buttonManager.isButtonHovered("autoplay")) {
+            RegionStoryClient.config.autoplay = !RegionStoryClient.config.autoplay;
+            AutoConfig.getConfigHolder(RegionStoryConfig.class).save();
+        } else if (buttonManager.isButtonHovered("hidden")) {
+            hideUI = true;
+        } else if (buttonManager.isButtonHovered("history")) {
+            history.forEach(historyItem -> {
+                if (historyItem.isOption) {
+                    System.out.println("Option : " + historyItem.dialogue);
+                } else {
+                    System.out.println(historyItem.character + " : " + historyItem.dialogue);
+                }
+            });
+        } else if (typingAnimation) {
             typingAnimation = false;
             return true;
         } else if (!dialogue.entry(entryId).options().isEmpty()) {
             if (mouseHoveredOption < 0) {return true;}
+            history.add(new HistoryItem(dialogue.entry(entryId).options().get(mouseHoveredOption).text()));
             ClientPlayNetworking.send(new RegionStoryMod.SelectOptionPayload(dialogue.id, entryId, mouseHoveredOption));
+            playPopSound();
         } else {
+            autoplayTime = -1;
             ClientPlayNetworking.send(new RegionStoryMod.AdvanceDialoguePayload(dialogue.id, entryId));
+            playPopSound();
         }
         return true;
     }
@@ -99,17 +138,45 @@ public final class DialogueScreen extends Screen {
     }
 
     @Override
+    public void tick() {
+        if (RegionStoryClient.config.autoplay && dialogue.entry(entryId).options().isEmpty()) {
+            if (!typingAnimation && autoplayTime < 0) {
+                autoplayTime = System.currentTimeMillis() + (long) (RegionStoryClient.config.autoplayDelay * 1000);
+            }
+            if (autoplayTime >= 0 && autoplayTime <= System.currentTimeMillis()) {
+                playPopSound();
+                ClientPlayNetworking.send(new RegionStoryMod.AdvanceDialoguePayload(dialogue.id, entryId));
+                autoplayTime = -1;
+            }
+        }
+    }
+
+    @Override
     public void render(DrawContext context, int mouseX, int mouseY, float delta) {
+        if (hideUI) return;
         super.render(context, mouseX, mouseY, delta);
         DialogueDefinition.Entry entry = dialogue.entry(entryId);
-        List<String> dialogueLines = wrap(entry.text());
-        float renderHeight = height - scale(Math.min(DIALOGUE_BASE_HEIGHT + dialogueLines.size() * BODY_LINE_HEIGHT, DIALOGUE_MAX_HEIGHT));
+        List<String> dialogueLines = splitText(entry.text());
+        float renderHeight = height - scale(Math.max(DIALOGUE_BASE_HEIGHT + dialogueLines.size() * BODY_LINE_HEIGHT, DIALOGUE_MIN_HEIGHT * height));
 
         renderBackground(context, renderHeight);
         renderHeight = renderSpeakerName(context, renderHeight, entry);
         renderDialogueText(context, renderHeight, dialogueLines);
         renderContinueIcon(context, entry);
         renderOptions(context, entry, dialogueLines, mouseX, mouseY);
+
+        if (RegionStoryClient.config.autoplay) {
+            context.getMatrices().pushMatrix();
+            context.getMatrices().translate(16f, 16f);
+            context.getMatrices().scale(7.9f);
+            context.getMatrices().rotate((float) Math.toRadians(-System.currentTimeMillis() / 3d % 360));
+            context.drawTexturedQuad(dialogue.entry(entryId).options().isEmpty() ? Identifier.of(RegionStoryMod.MOD_ID, "textures/gui/autoplay.png") : Identifier.of(RegionStoryMod.MOD_ID, "textures/gui/autoplay_disabled.png"), -1, -1, 1, 1, 0, 1, 0, 1);
+            context.getMatrices().popMatrix();
+        }
+        buttonManager.renderButton("autoplay", context, 16f, 16f, 8f, mouseX, mouseY);
+        GILText.textRender(context, RegionStoryClient.config.autoplay ? "播放中" : "自动", 26f , 16f - client.textRenderer.fontHeight / 2f).color(entry.options().isEmpty() ? 0xffffffff : 0x40ffffff).render();
+        buttonManager.renderButton("history", context, 68f, 16f, 8f, mouseX, mouseY);
+        buttonManager.renderButton("hidden", context, 94f, 16f, 8f, mouseX, mouseY);
     }
 
     private void renderBackground(DrawContext context, float renderHeight) {
@@ -144,7 +211,9 @@ public final class DialogueScreen extends Screen {
             renderHeight += scale(BODY_LINE_HEIGHT);
         }
 
-        if (typingCount >= 0) {typingAnimation = false;}  // 如果在完全渲染完后typingCount>=0，即渲染字数大于等于总字数，说明打字机动画结束
+        if (typingCount >= 0) {  // 如果在完全渲染完后typingCount>=0，即渲染字数大于等于总字数，说明打字机动画结束
+            typingAnimation = false;
+        }
     }
 
     private void renderContinueIcon(DrawContext context, DialogueDefinition.Entry entry) {
@@ -158,7 +227,7 @@ public final class DialogueScreen extends Screen {
 
     private void renderOptions(DrawContext context, DialogueDefinition.Entry entry, List<String> dialogueLines, int mouseX, int mouseY) {
         if (typingAnimation) return;
-        float y = height - scale(Math.min(DIALOGUE_BASE_HEIGHT + dialogueLines.size() * BODY_LINE_HEIGHT, DIALOGUE_MAX_HEIGHT) + 20);
+        float y = height - scale(Math.max(DIALOGUE_BASE_HEIGHT + dialogueLines.size() * BODY_LINE_HEIGHT, DIALOGUE_MIN_HEIGHT * height) + 20);
         int index = 0;
         mouseHoveredOption = -1;
         for (DialogueDefinition.Option option : entry.options()) {
@@ -173,27 +242,21 @@ public final class DialogueScreen extends Screen {
 
     private float scale(double number) {return (float) (RegionStoryClient.config.scale * number);}
 
-    private List<String> wrap(String value) {
-        String text = value == null ? "" : value;
-        List<String> lines = new ArrayList<>();
-        StringBuilder line = new StringBuilder();
+    private List<String> splitText(String text){
         int limit = width - (int) scale(DIALOGUE_SIDE_PADDING * 2);
-        for (int i = 0; i < text.length(); i++) {
-            char character = text.charAt(i);
+        List<String> line = new ArrayList<>();
+        line.add("");
+        for (char character : text.toCharArray()) {
             if (character == '\n') {
-                lines.add(line.toString());
-                line.setLength(0);
-                continue;
+                line.add("");
+            } else {
+                line.set(line.size() - 1, line.getLast() + character);
+                if (scale(GILText.width(line.getLast()) * DialogueRegionHint.OPTION_TEXT_SCALE) > limit) {
+                    line.add("");
+                }
             }
-            String candidate = line + String.valueOf(character);
-            if (!line.isEmpty() && GILText.width(candidate) * DialogueRegionHint.OPTION_TEXT_SCALE * RegionStoryClient.config.scale > limit) {
-                lines.add(line.toString());
-                line.setLength(0);
-            }
-            line.append(character);
         }
-        if (!line.isEmpty() || lines.isEmpty()) lines.add(line.toString());
-        return lines;
+        return line;
     }
 
     public void applyEntry(DialogueDefinition dialogue, String entryId) {
@@ -204,6 +267,8 @@ public final class DialogueScreen extends Screen {
             this.entryId = entryId;
             this.typingStartTime = System.currentTimeMillis();
             this.keyboardSelectedOption = dialogue.entry(entryId).options().size() - 1;
+            buttonManager.setButtonDisabled("autoplay", !dialogue.entry(entryId).options().isEmpty());
+            history.add(new HistoryItem(dialogue.entry(entryId).speaker(), dialogue.entry(entryId).text()));
         }
     }
 
@@ -218,6 +283,28 @@ public final class DialogueScreen extends Screen {
             if (keyboardSelectedOption < 0) {
                 keyboardSelectedOption = dialogue.entry(entryId).options().size() - 1;
             }
+        }
+    }
+
+    public void playPopSound() {
+        if (client.player != null) {
+            client.player.getEntityWorld().playSoundClient(SoundEvents.ENTITY_ITEM_PICKUP, SoundCategory.PLAYERS, 1f, 2f);
+        }
+    }
+
+    public static class HistoryItem {
+        public String character = "";
+        public String dialogue;
+        public boolean isOption = false;
+
+        public HistoryItem(String character, String dialogue) {
+            this.character = character;
+            this.dialogue = dialogue;
+        }
+
+        public HistoryItem(String dialogue) {
+            this.dialogue = dialogue;
+            this.isOption = true;
         }
     }
 }

@@ -7,6 +7,8 @@ import me.shedaniel.autoconfig.annotation.ConfigEntry;
 
 @Config(name = RegionStoryMod.MOD_ID)
 public class RegionStoryConfig implements ConfigData {
+    public boolean autoplay = false;
+    public float autoplayDelay = 1f;
     public float scale = 0.8f;
 
     @ConfigEntry.Gui.CollapsibleObject
