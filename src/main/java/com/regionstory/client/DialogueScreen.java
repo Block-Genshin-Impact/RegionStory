@@ -22,7 +22,6 @@ import org.joml.Matrix3x2f;
 import java.util.ArrayList;
 import java.util.List;
 
-/** Dialogue screen. Shapes are shader-rendered; Minecraft TextRenderer remains the font backend. */
 public final class DialogueScreen extends Screen {
     private static final int TYPING_SPEED_MILLISECOND = 30;
     private static final int BODY_LINE_HEIGHT = 12;
@@ -30,8 +29,10 @@ public final class DialogueScreen extends Screen {
     private static final float DIALOGUE_MIN_HEIGHT = 0.35f;
     private static final int DIALOGUE_SIDE_PADDING = 60;
     private static final int HOVER_DIAMOND_Y = 10;
-    private static final float OPTION_DELTA = 0.4f;
+    private static final float OPTION_DELTA = 0.2f;
     private static final float OPTION_TRANSITION = 10;
+    private static final int HISTORY_BACKGROUND_ALPHA = 240;
+    private static final float HISTORY_BACKGROUND_ALPHA_DELTA = 0.4f;
 
     private static final int K_W = 87;
     private static final int K_S = 83;
@@ -40,6 +41,7 @@ public final class DialogueScreen extends Screen {
     private static final int K_ESC = 256;
 
     private float option_offset = 0;
+    private float history_background_alpha = 0;
 
     private int mouseHoveredOption = -1;
     private int keyboardSelectedOption = -1;
@@ -50,6 +52,7 @@ public final class DialogueScreen extends Screen {
     private final boolean hudVisible;
     private boolean typingAnimation = true;
     private long typingStartTime;
+    private long lastTransitionTickTime = -1;
     private long autoplayTime = -1;
     private Statue statue = Statue.DIALOGUE;
     private final List<HistoryItem> history = new ArrayList<>();
@@ -73,7 +76,9 @@ public final class DialogueScreen extends Screen {
     public boolean shouldPause() {return false;}
 
     @Override
-    public void renderBackground(DrawContext context, int mouseX, int mouseY, float delta) {}
+    public void renderBackground(DrawContext context, int mouseX, int mouseY, float delta) {
+        context.fill(0, 0, width, height, ((int) history_background_alpha) << 24 | 0x162231);
+    }
 
     @Override
     public boolean keyPressed(KeyInput input) {
@@ -100,7 +105,11 @@ public final class DialogueScreen extends Screen {
                 }
             }
             case HIDE_UI -> statue = Statue.DIALOGUE;
-            case HISTORY -> {}
+            case HISTORY -> {
+                if (input.getKeycode() == K_ESC) {
+                    statue = Statue.DIALOGUE;
+                }
+            }
         }
         return true;
     }
@@ -115,13 +124,14 @@ public final class DialogueScreen extends Screen {
                 } else if (buttonManager.isButtonHovered("hidden")) {
                     statue = Statue.HIDE_UI;
                 } else if (buttonManager.isButtonHovered("history")) {
-                    history.forEach(historyItem -> {
-                        if (historyItem.isOption) {
-                            System.out.println("Option : " + historyItem.dialogue);
-                        } else {
-                            System.out.println(historyItem.character + " : " + historyItem.dialogue);
-                        }
-                    });
+                    statue = Statue.HISTORY;
+//                    history.forEach(historyItem -> {
+//                        if (historyItem.isOption) {
+//                            System.out.println("Option : " + historyItem.dialogue);
+//                        } else {
+//                            System.out.println(historyItem.character + " : " + historyItem.dialogue);
+//                        }
+//                    });
                 } else if (typingAnimation) {
                     typingAnimation = false;
                     return true;
@@ -150,23 +160,28 @@ public final class DialogueScreen extends Screen {
 
     @Override
     public void tick() {
-        if (RegionStoryClient.config.autoplay && dialogue.entry(entryId).options().isEmpty()) {
-            if (!typingAnimation && autoplayTime < 0) {
-                autoplayTime = System.currentTimeMillis() + (long) (RegionStoryClient.config.autoplayDelay * 1000);
+        switch (statue) {
+            case DIALOGUE -> {
+                if (RegionStoryClient.config.autoplay && dialogue.entry(entryId).options().isEmpty()) {
+                    if (!typingAnimation && autoplayTime < 0) {
+                        autoplayTime = System.currentTimeMillis() + (long) (RegionStoryClient.config.autoplayDelay * 1000);
+                    }
+                    if (autoplayTime >= 0 && autoplayTime <= System.currentTimeMillis()) {
+                        playPopSound();
+                        ClientPlayNetworking.send(new RegionStoryMod.AdvanceDialoguePayload(dialogue.id, entryId));
+                        autoplayTime = -1;
+                    }
+                }
             }
-            if (autoplayTime >= 0 && autoplayTime <= System.currentTimeMillis()) {
-                playPopSound();
-                ClientPlayNetworking.send(new RegionStoryMod.AdvanceDialoguePayload(dialogue.id, entryId));
-                autoplayTime = -1;
+            case HISTORY -> {
             }
         }
-        if (!typingAnimation) {
-            option_offset = MathHelper.lerp(OPTION_DELTA, option_offset, 0);
-        }
+
     }
 
     @Override
     public void render(DrawContext context, int mouseX, int mouseY, float delta) {
+        transitionTick();
         switch (statue) {
             case DIALOGUE -> {
                 DialogueDefinition.Entry entry = dialogue.entry(entryId);
@@ -181,7 +196,27 @@ public final class DialogueScreen extends Screen {
                 renderButtons(context, mouseX, mouseY);
             }
             case HIDE_UI -> {}
-            case HISTORY -> System.out.println(1);
+            case HISTORY -> {}
+        }
+    }
+
+    private void transitionTick() {
+        // 由于原版的tick方法每秒执行20次 (每50ms计算一次) ，会导致过度动画存在明显卡顿
+        // 因此让过度动画在渲染时计算，并添加限制每16ms计算一次
+        if (System.currentTimeMillis() - lastTransitionTickTime < 16) {
+            return;
+        }
+        lastTransitionTickTime = System.currentTimeMillis();
+        switch (statue) {
+            case DIALOGUE -> {
+                if (!typingAnimation) {
+                    option_offset = MathHelper.lerp(OPTION_DELTA, option_offset, 0);
+                }
+                history_background_alpha = MathHelper.lerp(HISTORY_BACKGROUND_ALPHA_DELTA, history_background_alpha, 0);
+            }
+            case HISTORY -> {
+                history_background_alpha = MathHelper.lerp(HISTORY_BACKGROUND_ALPHA_DELTA, history_background_alpha, HISTORY_BACKGROUND_ALPHA);
+            }
         }
     }
 
@@ -241,7 +276,7 @@ public final class DialogueScreen extends Screen {
             boolean mouseHover = x <= mouseX && mouseX <= x + scale(0.95 - DialogueRegionHint.OPTION_ANCHOR_X) * width && y <= mouseY && mouseY <= y + scale(DialogueRegionHint.OPTION_HEIGHT);
             context.getMatrices().pushMatrix();
             context.getMatrices().translate(option_offset, 0);
-            DialogueRegionHint.renderOption(context, (int) x, (int) y, option.text(), mouseHover, index == keyboardSelectedOption);
+            DialogueRegionHint.renderOption(context, (int) x, (int) y, option.text(), option.icon(), mouseHover, index == keyboardSelectedOption);
             context.getMatrices().popMatrix();
             y -= scale(DialogueRegionHint.OPTION_HEIGHT + DialogueRegionHint.OPTION_GAP);
             if (mouseHover) {mouseHoveredOption = index;}
