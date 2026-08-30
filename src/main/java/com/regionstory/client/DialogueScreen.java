@@ -16,6 +16,7 @@ import net.minecraft.sound.SoundCategory;
 import net.minecraft.sound.SoundEvents;
 import net.minecraft.text.Text;
 import net.minecraft.util.Identifier;
+import net.minecraft.util.math.MathHelper;
 import org.joml.Matrix3x2f;
 
 import java.util.ArrayList;
@@ -29,6 +30,8 @@ public final class DialogueScreen extends Screen {
     private static final float DIALOGUE_MIN_HEIGHT = 0.35f;
     private static final int DIALOGUE_SIDE_PADDING = 60;
     private static final int HOVER_DIAMOND_Y = 10;
+    private static final float OPTION_DELTA = 0.4f;
+    private static final float OPTION_TRANSITION = 10;
 
     private static final int K_W = 87;
     private static final int K_S = 83;
@@ -36,20 +39,20 @@ public final class DialogueScreen extends Screen {
     private static final int K_SPACE = 32;
     private static final int K_ESC = 256;
 
-    private final boolean hudVisible;
-
-    private DialogueDefinition dialogue;
-    private String entryId;
+    private float option_offset = 0;
 
     private int mouseHoveredOption = -1;
     private int keyboardSelectedOption = -1;
 
+    private DialogueDefinition dialogue;
+    private String entryId;
+
+    private final boolean hudVisible;
     private boolean typingAnimation = true;
     private long typingStartTime;
     private long autoplayTime = -1;
-    private boolean hideUI = false;
+    private Statue statue = Statue.DIALOGUE;
     private final List<HistoryItem> history = new ArrayList<>();
-
     private final GILButton.ButtonManager buttonManager = GILButton.getManager();
 
     public DialogueScreen(DialogueDefinition dialogue, String entryId) {
@@ -74,59 +77,67 @@ public final class DialogueScreen extends Screen {
 
     @Override
     public boolean keyPressed(KeyInput input) {
-        if (hideUI) {
-            hideUI = false;
-        }else if (input.getKeycode() == K_ESC) {
-            ClientPlayNetworking.send(new RegionStoryMod.CloseDialoguePayload(dialogue.id));
-        } else if (input.getKeycode() == K_F || input.getKeycode() == K_SPACE) {
-            if (typingAnimation) {
-                typingAnimation = false;
-            } else if (!dialogue.entry(entryId).options().isEmpty()) {
-                if (keyboardSelectedOption < 0 || input.getKeycode() != K_F) {return true;}
-                history.add(new HistoryItem(dialogue.entry(entryId).options().get(keyboardSelectedOption).text()));
-                ClientPlayNetworking.send(new RegionStoryMod.SelectOptionPayload(dialogue.id, entryId, keyboardSelectedOption));
-                playPopSound();
-            } else {
-                ClientPlayNetworking.send(new RegionStoryMod.AdvanceDialoguePayload(dialogue.id, entryId));
-                playPopSound();
+        switch (statue) {
+            case DIALOGUE -> {
+                if (input.getKeycode() == K_ESC) {
+                    ClientPlayNetworking.send(new RegionStoryMod.CloseDialoguePayload(dialogue.id));
+                } else if (input.getKeycode() == K_F || input.getKeycode() == K_SPACE) {
+                    if (typingAnimation) {
+                        typingAnimation = false;
+                    } else if (!dialogue.entry(entryId).options().isEmpty()) {
+                        if (keyboardSelectedOption < 0 || input.getKeycode() != K_F) {return true;}
+                        history.add(new HistoryItem(dialogue.entry(entryId).options().get(keyboardSelectedOption).text()));
+                        ClientPlayNetworking.send(new RegionStoryMod.SelectOptionPayload(dialogue.id, entryId, keyboardSelectedOption));
+                        playPopSound();
+                    } else {
+                        ClientPlayNetworking.send(new RegionStoryMod.AdvanceDialoguePayload(dialogue.id, entryId));
+                        playPopSound();
+                    }
+                } else if (input.getKeycode() == K_W) {
+                    keyboardSelectionChange(1);
+                } else if (input.getKeycode() == K_S) {
+                    keyboardSelectionChange(-1);
+                }
             }
-        } else if (input.getKeycode() == K_W) {
-            keyboardSelectionChange(1);
-        } else if (input.getKeycode() == K_S) {
-            keyboardSelectionChange(-1);
+            case HIDE_UI -> statue = Statue.DIALOGUE;
+            case HISTORY -> {}
         }
         return true;
     }
 
     @Override
     public boolean mouseClicked(Click click, boolean doubled) {
-        if (hideUI) {
-            hideUI = false;
-        } else if (buttonManager.isButtonHovered("autoplay")) {
-            RegionStoryClient.config.autoplay = !RegionStoryClient.config.autoplay;
-            AutoConfig.getConfigHolder(RegionStoryConfig.class).save();
-        } else if (buttonManager.isButtonHovered("hidden")) {
-            hideUI = true;
-        } else if (buttonManager.isButtonHovered("history")) {
-            history.forEach(historyItem -> {
-                if (historyItem.isOption) {
-                    System.out.println("Option : " + historyItem.dialogue);
+        switch (statue) {
+            case DIALOGUE -> {
+                if (buttonManager.isButtonHovered("autoplay")) {
+                    RegionStoryClient.config.autoplay = !RegionStoryClient.config.autoplay;
+                    AutoConfig.getConfigHolder(RegionStoryConfig.class).save();
+                } else if (buttonManager.isButtonHovered("hidden")) {
+                    statue = Statue.HIDE_UI;
+                } else if (buttonManager.isButtonHovered("history")) {
+                    history.forEach(historyItem -> {
+                        if (historyItem.isOption) {
+                            System.out.println("Option : " + historyItem.dialogue);
+                        } else {
+                            System.out.println(historyItem.character + " : " + historyItem.dialogue);
+                        }
+                    });
+                } else if (typingAnimation) {
+                    typingAnimation = false;
+                    return true;
+                } else if (!dialogue.entry(entryId).options().isEmpty()) {
+                    if (mouseHoveredOption < 0) {return true;}
+                    history.add(new HistoryItem(dialogue.entry(entryId).options().get(mouseHoveredOption).text()));
+                    ClientPlayNetworking.send(new RegionStoryMod.SelectOptionPayload(dialogue.id, entryId, mouseHoveredOption));
+                    playPopSound();
                 } else {
-                    System.out.println(historyItem.character + " : " + historyItem.dialogue);
+                    autoplayTime = -1;
+                    ClientPlayNetworking.send(new RegionStoryMod.AdvanceDialoguePayload(dialogue.id, entryId));
+                    playPopSound();
                 }
-            });
-        } else if (typingAnimation) {
-            typingAnimation = false;
-            return true;
-        } else if (!dialogue.entry(entryId).options().isEmpty()) {
-            if (mouseHoveredOption < 0) {return true;}
-            history.add(new HistoryItem(dialogue.entry(entryId).options().get(mouseHoveredOption).text()));
-            ClientPlayNetworking.send(new RegionStoryMod.SelectOptionPayload(dialogue.id, entryId, mouseHoveredOption));
-            playPopSound();
-        } else {
-            autoplayTime = -1;
-            ClientPlayNetworking.send(new RegionStoryMod.AdvanceDialoguePayload(dialogue.id, entryId));
-            playPopSound();
+            }
+            case HIDE_UI ->  statue = Statue.DIALOGUE;
+            case HISTORY -> {}
         }
         return true;
     }
@@ -149,34 +160,29 @@ public final class DialogueScreen extends Screen {
                 autoplayTime = -1;
             }
         }
+        if (!typingAnimation) {
+            option_offset = MathHelper.lerp(OPTION_DELTA, option_offset, 0);
+        }
     }
 
     @Override
     public void render(DrawContext context, int mouseX, int mouseY, float delta) {
-        if (hideUI) return;
-        super.render(context, mouseX, mouseY, delta);
-        DialogueDefinition.Entry entry = dialogue.entry(entryId);
-        List<String> dialogueLines = splitText(entry.text());
-        float renderHeight = height - scale(Math.max(DIALOGUE_BASE_HEIGHT + dialogueLines.size() * BODY_LINE_HEIGHT, DIALOGUE_MIN_HEIGHT * height));
+        switch (statue) {
+            case DIALOGUE -> {
+                DialogueDefinition.Entry entry = dialogue.entry(entryId);
+                List<String> dialogueLines = splitText(entry.text());
+                float renderHeight = height - scale(Math.max(DIALOGUE_BASE_HEIGHT + dialogueLines.size() * BODY_LINE_HEIGHT, DIALOGUE_MIN_HEIGHT * height));
 
-        renderBackground(context, renderHeight);
-        renderHeight = renderSpeakerName(context, renderHeight, entry);
-        renderDialogueText(context, renderHeight, dialogueLines);
-        renderContinueIcon(context, entry);
-        renderOptions(context, entry, dialogueLines, mouseX, mouseY);
-
-        if (RegionStoryClient.config.autoplay) {
-            context.getMatrices().pushMatrix();
-            context.getMatrices().translate(16f, 16f);
-            context.getMatrices().scale(7.9f);
-            context.getMatrices().rotate((float) Math.toRadians(-System.currentTimeMillis() / 3d % 360));
-            context.drawTexturedQuad(dialogue.entry(entryId).options().isEmpty() ? Identifier.of(RegionStoryMod.MOD_ID, "textures/gui/autoplay.png") : Identifier.of(RegionStoryMod.MOD_ID, "textures/gui/autoplay_disabled.png"), -1, -1, 1, 1, 0, 1, 0, 1);
-            context.getMatrices().popMatrix();
+                renderBackground(context, renderHeight);
+                renderHeight = renderSpeakerName(context, renderHeight, entry);
+                renderDialogueText(context, renderHeight, dialogueLines);
+                renderContinueIcon(context, entry);
+                renderOptions(context, entry, dialogueLines, mouseX, mouseY);
+                renderButtons(context, mouseX, mouseY);
+            }
+            case HIDE_UI -> {}
+            case HISTORY -> System.out.println(1);
         }
-        buttonManager.renderButton("autoplay", context, 16f, 16f, 8f, mouseX, mouseY);
-        GILText.textRender(context, RegionStoryClient.config.autoplay ? "播放中" : "自动", 26f , 16f - client.textRenderer.fontHeight / 2f).color(entry.options().isEmpty() ? 0xffffffff : 0x40ffffff).render();
-        buttonManager.renderButton("history", context, 68f, 16f, 8f, mouseX, mouseY);
-        buttonManager.renderButton("hidden", context, 94f, 16f, 8f, mouseX, mouseY);
     }
 
     private void renderBackground(DrawContext context, float renderHeight) {
@@ -233,11 +239,29 @@ public final class DialogueScreen extends Screen {
         for (DialogueDefinition.Option option : entry.options()) {
             float x = (1 - scale(1 - DialogueRegionHint.OPTION_ANCHOR_X)) * width;
             boolean mouseHover = x <= mouseX && mouseX <= x + scale(0.95 - DialogueRegionHint.OPTION_ANCHOR_X) * width && y <= mouseY && mouseY <= y + scale(DialogueRegionHint.OPTION_HEIGHT);
+            context.getMatrices().pushMatrix();
+            context.getMatrices().translate(option_offset, 0);
             DialogueRegionHint.renderOption(context, (int) x, (int) y, option.text(), mouseHover, index == keyboardSelectedOption);
+            context.getMatrices().popMatrix();
             y -= scale(DialogueRegionHint.OPTION_HEIGHT + DialogueRegionHint.OPTION_GAP);
             if (mouseHover) {mouseHoveredOption = index;}
             index++;
         }
+    }
+
+    private void renderButtons(DrawContext context, int mouseX, int mouseY) {
+        if (RegionStoryClient.config.autoplay) {
+            context.getMatrices().pushMatrix();
+            context.getMatrices().translate(16f, 16f);
+            context.getMatrices().scale(7.9f);
+            context.getMatrices().rotate((float) Math.toRadians(-System.currentTimeMillis() / 3d % 360));
+            context.drawTexturedQuad(dialogue.entry(entryId).options().isEmpty() ? Identifier.of(RegionStoryMod.MOD_ID, "textures/gui/autoplay.png") : Identifier.of(RegionStoryMod.MOD_ID, "textures/gui/autoplay_disabled.png"), -1, -1, 1, 1, 0, 1, 0, 1);
+            context.getMatrices().popMatrix();
+        }
+        buttonManager.renderButton("autoplay", context, 16f, 16f, 8f, mouseX, mouseY);
+        GILText.textRender(context, RegionStoryClient.config.autoplay ? "播放中" : "自动", 26f , 16f - client.textRenderer.fontHeight / 2f).color(dialogue.entry(entryId).options().isEmpty() ? 0xffffffff : 0x40ffffff).render();
+        buttonManager.renderButton("history", context, 68f, 16f, 8f, mouseX, mouseY);
+        buttonManager.renderButton("hidden", context, 94f, 16f, 8f, mouseX, mouseY);
     }
 
     private float scale(double number) {return (float) (RegionStoryClient.config.scale * number);}
@@ -269,6 +293,8 @@ public final class DialogueScreen extends Screen {
             this.keyboardSelectedOption = dialogue.entry(entryId).options().size() - 1;
             buttonManager.setButtonDisabled("autoplay", !dialogue.entry(entryId).options().isEmpty());
             history.add(new HistoryItem(dialogue.entry(entryId).speaker(), dialogue.entry(entryId).text()));
+
+            option_offset = OPTION_TRANSITION;
         }
     }
 
@@ -306,5 +332,11 @@ public final class DialogueScreen extends Screen {
             this.dialogue = dialogue;
             this.isOption = true;
         }
+    }
+
+    private enum Statue {
+        DIALOGUE,
+        HISTORY,
+        HIDE_UI
     }
 }
