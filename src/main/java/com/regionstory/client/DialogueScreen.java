@@ -16,6 +16,7 @@ import net.minecraft.sound.SoundCategory;
 import net.minecraft.sound.SoundEvents;
 import net.minecraft.text.Text;
 import net.minecraft.util.Identifier;
+import net.minecraft.util.Util;
 import net.minecraft.util.math.MathHelper;
 import org.joml.Matrix3x2f;
 
@@ -26,13 +27,17 @@ public final class DialogueScreen extends Screen {
     private static final int TYPING_SPEED_MILLISECOND = 30;
     private static final int BODY_LINE_HEIGHT = 12;
     private static final int DIALOGUE_BASE_HEIGHT = 88;
-    private static final float DIALOGUE_MIN_HEIGHT = 0.35f;
+    private static final float DIALOGUE_MIN_HEIGHT = 0.25f;
     private static final int DIALOGUE_SIDE_PADDING = 60;
     private static final int HOVER_DIAMOND_Y = 10;
     private static final float OPTION_DELTA = 0.2f;
     private static final float OPTION_TRANSITION = 10;
     private static final int HISTORY_BACKGROUND_ALPHA = 240;
     private static final float HISTORY_BACKGROUND_ALPHA_DELTA = 0.4f;
+    private static final int HISTORY_BAR_HEIGHT = 50;
+    private static final float HISTORY_BAR_HEIGHT_DELTA = 0.2f;
+    private static final float HISTORY_BAR_DIVIDE_WIDTH = 2.1f;
+    private static final float HISTORY_BAR_DIVIDE_WIDTH_DELTA = 0.4f;
 
     private static final int K_W = 87;
     private static final int K_S = 83;
@@ -40,8 +45,10 @@ public final class DialogueScreen extends Screen {
     private static final int K_SPACE = 32;
     private static final int K_ESC = 256;
 
-    private float option_offset = 0;
-    private float history_background_alpha = 0;
+    private float optionOffset = 0;
+    private float historyBackgroundAlpha = 0;
+    private float historyBarDivideWidth = 4;
+    private float historyBarItemHeight = -10;
 
     private int mouseHoveredOption = -1;
     private int keyboardSelectedOption = -1;
@@ -50,10 +57,14 @@ public final class DialogueScreen extends Screen {
     private String entryId;
 
     private final boolean hudVisible;
+    private boolean exitHistory;
+    private boolean historyCloseHover = false;
     private boolean typingAnimation = true;
     private long typingStartTime;
     private long lastTransitionTickTime = -1;
     private long autoplayTime = -1;
+    public float historyScroll = 0;
+    public boolean mouseDown = false;
     private Statue statue = Statue.DIALOGUE;
     private final List<HistoryItem> history = new ArrayList<>();
     private final GILButton.ButtonManager buttonManager = GILButton.getManager();
@@ -61,9 +72,9 @@ public final class DialogueScreen extends Screen {
     public DialogueScreen(DialogueDefinition dialogue, String entryId) {
         super(Text.literal("RegionStory"));
 
-        buttonManager.addButton("autoplay");
-        buttonManager.addButton("history");
-        buttonManager.addButton("hidden");
+        buttonManager.addButton("autoplay", Identifier.of(RegionStoryMod.MOD_ID, RegionStoryClient.config.autoplay ? "textures/gui/autoplay_icon.png" : "textures/gui/autoplay_disabled_icon.png"));
+        buttonManager.addButton("history", Identifier.of(RegionStoryMod.MOD_ID, "textures/gui/history_icon.png"));
+        buttonManager.addButton("hidden", Identifier.of(RegionStoryMod.MOD_ID, "textures/gui/hidden_icon.png"));
 
         this.hudVisible = MinecraftClient.getInstance().options.hudHidden;
         MinecraftClient.getInstance().options.hudHidden = true;
@@ -77,14 +88,14 @@ public final class DialogueScreen extends Screen {
 
     @Override
     public void renderBackground(DrawContext context, int mouseX, int mouseY, float delta) {
-        context.fill(0, 0, width, height, ((int) history_background_alpha) << 24 | 0x162231);
+        context.fill(0, 0, width, height, transparent((int) historyBackgroundAlpha, 0x162231));
     }
 
     @Override
     public boolean keyPressed(KeyInput input) {
         switch (statue) {
             case DIALOGUE -> {
-                if (input.getKeycode() == K_ESC) {
+                if (input.getKeycode() == K_ESC && RegionStoryClient.config.allow_force_exit) {
                     ClientPlayNetworking.send(new RegionStoryMod.CloseDialoguePayload(dialogue.id));
                 } else if (input.getKeycode() == K_F || input.getKeycode() == K_SPACE) {
                     if (typingAnimation) {
@@ -105,11 +116,7 @@ public final class DialogueScreen extends Screen {
                 }
             }
             case HIDE_UI -> statue = Statue.DIALOGUE;
-            case HISTORY -> {
-                if (input.getKeycode() == K_ESC) {
-                    statue = Statue.DIALOGUE;
-                }
-            }
+            case HISTORY -> exitHistory = true;
         }
         return true;
     }
@@ -119,19 +126,19 @@ public final class DialogueScreen extends Screen {
         switch (statue) {
             case DIALOGUE -> {
                 if (buttonManager.isButtonHovered("autoplay")) {
+                    playPopSound();
                     RegionStoryClient.config.autoplay = !RegionStoryClient.config.autoplay;
+                    buttonManager.addButton("autoplay", Identifier.of(RegionStoryMod.MOD_ID, RegionStoryClient.config.autoplay ? "textures/gui/autoplay_icon.png" : "textures/gui/autoplay_disabled_icon.png"));
                     AutoConfig.getConfigHolder(RegionStoryConfig.class).save();
                 } else if (buttonManager.isButtonHovered("hidden")) {
+                    playPopSound();
                     statue = Statue.HIDE_UI;
                 } else if (buttonManager.isButtonHovered("history")) {
+                    playPopSound();
                     statue = Statue.HISTORY;
-//                    history.forEach(historyItem -> {
-//                        if (historyItem.isOption) {
-//                            System.out.println("Option : " + historyItem.dialogue);
-//                        } else {
-//                            System.out.println(historyItem.character + " : " + historyItem.dialogue);
-//                        }
-//                    });
+                    historyScroll = 0;
+                    historyBarDivideWidth = 10;
+                    historyBarItemHeight = -10;
                 } else if (typingAnimation) {
                     typingAnimation = false;
                     return true;
@@ -147,9 +154,32 @@ public final class DialogueScreen extends Screen {
                 }
             }
             case HIDE_UI ->  statue = Statue.DIALOGUE;
-            case HISTORY -> {}
+            case HISTORY -> {
+                if (historyCloseHover) {
+                    exitHistory = true;
+                }
+            }
         }
+        mouseDown = true;
         return true;
+    }
+
+    @Override
+    public boolean mouseReleased(Click click) {
+        mouseDown = false;
+        return super.mouseReleased(click);
+    }
+
+    @Override
+    public boolean mouseDragged(Click click, double offsetX, double offsetY) {
+        if (statue == Statue.HISTORY) {
+            if (historyScroll < 0 || historyScroll > Math.max(scale(client.textRenderer.fontHeight * 2.8f) * history.size() - height + scale(HISTORY_BAR_HEIGHT), 0)) {
+                historyScroll = (float) (historyScroll - offsetY * 0.5f);
+            } else {
+                historyScroll = (float) (historyScroll - offsetY);
+            }
+        }
+        return super.mouseDragged(click, offsetX, offsetY);
     }
 
     @Override
@@ -176,7 +206,6 @@ public final class DialogueScreen extends Screen {
             case HISTORY -> {
             }
         }
-
     }
 
     @Override
@@ -189,14 +218,67 @@ public final class DialogueScreen extends Screen {
                 float renderHeight = height - scale(Math.max(DIALOGUE_BASE_HEIGHT + dialogueLines.size() * BODY_LINE_HEIGHT, DIALOGUE_MIN_HEIGHT * height));
 
                 renderBackground(context, renderHeight);
-                renderHeight = renderSpeakerName(context, renderHeight, entry);
+                renderHeight = renderSpeakerName(context, renderHeight, dialogueLines, entry);
                 renderDialogueText(context, renderHeight, dialogueLines);
                 renderContinueIcon(context, entry);
                 renderOptions(context, entry, dialogueLines, mouseX, mouseY);
                 renderButtons(context, mouseX, mouseY);
             }
             case HIDE_UI -> {}
-            case HISTORY -> {}
+            case HISTORY -> {
+                context.getMatrices().pushMatrix();
+                context.getMatrices().translate(20, historyBarItemHeight);
+                context.drawTexturedQuad(Identifier.of(RegionStoryMod.MOD_ID, "textures/gui/history.png"), -8, -8, 8, 8, 0, 1, 0, 1);
+                context.getMatrices().translate(width - 40, 0);
+                float x = mouseX - width + 20;
+                float y = mouseY - historyBarItemHeight;
+                historyCloseHover = x > -7 && x < 7 && y > -7 && y < 7;
+                context.drawTexturedQuad(Identifier.of(RegionStoryMod.MOD_ID, historyCloseHover ? "textures/gui/history_close_hover.png" : "textures/gui/history_close.png"), -7, -7, 7, 7, 0, 1, 0, 1);
+                context.getMatrices().popMatrix();
+                GILText.textRender(context, "对话回顾", 35, historyBarItemHeight - client.textRenderer.fontHeight / 2f).color(transparent((int) historyBackgroundAlpha, 0xfd3bc8e)).render();
+                context.getMatrices().pushMatrix();
+                context.getMatrices().translate(width / 2f, scale(HISTORY_BAR_HEIGHT - 8));
+                context.getMatrices().scale(width / historyBarDivideWidth, 0.5f);
+                context.fill(-1, -1, 1, 1, 0x604e596c);
+                context.getMatrices().popMatrix();
+                context.enableScissor(0, (int) scale(HISTORY_BAR_HEIGHT - 6), width, height);
+                float itemHeight = scale(client.textRenderer.fontHeight * 2.8f);
+                context.getMatrices().pushMatrix();
+                float max = Math.max(itemHeight * history.size() - height + scale(HISTORY_BAR_HEIGHT), 0);
+                if (!mouseDown) {
+                    if (historyScroll < 0) {
+                        historyScroll = MathHelper.lerp(0.1f, historyScroll, 0);
+                    } else if (historyScroll > max) {
+                        historyScroll = MathHelper.lerp(0.1f, historyScroll, max);
+                    }
+                }
+                context.getMatrices().translate(0, scale(HISTORY_BAR_HEIGHT) - historyScroll);
+                float mouseLocalY = mouseY - historyScroll - HISTORY_BAR_HEIGHT;
+                for (HistoryItem historyItem : history) {
+                    if (mouseLocalY < client.textRenderer.fontHeight * 0.2f && mouseLocalY > client.textRenderer.fontHeight * -2f) {
+                        context.getMatrices().pushMatrix();
+                        context.getMatrices().translate(width / 2f, scale(client.textRenderer.fontHeight * 0.6f));
+                        context.getMatrices().scale(width * 0.8f, scale(client.textRenderer.fontHeight * 1.2f));
+                        context.getMatrices().scale(0.5f, 1);
+                        context.fill(-1, -1, 1, 1, 0x20ffffff);
+                        context.getMatrices().popMatrix();
+                    }
+                    GILText.textRender(context, historyItem.character, width * 0.3f - scale(16) - scale(GILText.width(historyItem.character)), 0).color(transparent((int) historyBackgroundAlpha, 0xfd3bc8e)).scale(scale(1.2f)).render();
+                    if (historyItem.isOption) {
+                        context.getMatrices().pushMatrix();
+                        context.getMatrices().translate(width * 0.3f - scale(24), scale(client.textRenderer.fontHeight) / 2f);
+                        context.getMatrices().scale(scale(18), client.textRenderer.fontHeight * 0.6f);
+                        context.fill(-1, -1, 1, 1, transparent((int) historyBackgroundAlpha, 0xfd3bc8e));
+                        context.getMatrices().popMatrix();
+                        GILText.textRender(context, "选项", width * 0.3f - scale(24), 0).color(transparent((int) historyBackgroundAlpha, 0x3d4456)).scale(scale(1.1f)).outline(false).center().render();
+                    }
+                    GILText.textRender(context, historyItem.dialogue, width * 0.3f, 0).color(transparent((int) historyBackgroundAlpha, 0xece5d8)).scale(scale(1.2f)).render();
+                    context.getMatrices().translate(0, itemHeight);
+                    mouseLocalY -= itemHeight;
+                }
+                context.getMatrices().popMatrix();
+                context.disableScissor();
+            }
         }
     }
 
@@ -210,12 +292,22 @@ public final class DialogueScreen extends Screen {
         switch (statue) {
             case DIALOGUE -> {
                 if (!typingAnimation) {
-                    option_offset = MathHelper.lerp(OPTION_DELTA, option_offset, 0);
+                    optionOffset = MathHelper.lerp(OPTION_DELTA, optionOffset, 0);
                 }
-                history_background_alpha = MathHelper.lerp(HISTORY_BACKGROUND_ALPHA_DELTA, history_background_alpha, 0);
             }
             case HISTORY -> {
-                history_background_alpha = MathHelper.lerp(HISTORY_BACKGROUND_ALPHA_DELTA, history_background_alpha, HISTORY_BACKGROUND_ALPHA);
+                if (exitHistory) {
+                    historyBackgroundAlpha = MathHelper.lerp(HISTORY_BACKGROUND_ALPHA_DELTA, historyBackgroundAlpha, 0);
+                    historyBarItemHeight = MathHelper.lerp(HISTORY_BAR_HEIGHT_DELTA, historyBarItemHeight, -10);
+                    if (historyBarItemHeight < -5) {
+                        statue = Statue.DIALOGUE;
+                        exitHistory = false;
+                    }
+                } else {
+                    historyBackgroundAlpha = MathHelper.lerp(HISTORY_BACKGROUND_ALPHA_DELTA, historyBackgroundAlpha, HISTORY_BACKGROUND_ALPHA);
+                    historyBarDivideWidth = MathHelper.lerp(HISTORY_BAR_DIVIDE_WIDTH_DELTA, historyBarDivideWidth, HISTORY_BAR_DIVIDE_WIDTH);
+                    historyBarItemHeight = MathHelper.lerp(HISTORY_BAR_HEIGHT_DELTA, historyBarItemHeight, scale(HISTORY_BAR_HEIGHT - 8) / 2f);
+                }
             }
         }
     }
@@ -224,16 +316,34 @@ public final class DialogueScreen extends Screen {
         context.drawTexturedQuad(Identifier.of(RegionStoryMod.MOD_ID, "textures/gui/dialogue_background.png"), 0, (int) renderHeight, width, height, 0, 1, 0, 1);
     }
 
-    private float renderSpeakerName(DrawContext context, float renderHeight, DialogueDefinition.Entry entry) {
+    private float renderSpeakerName(DrawContext context, float renderHeight, List<String> dialogueLines, DialogueDefinition.Entry entry) {
         renderHeight += scale(20);
         GILText.textRender(context, entry.speaker(), width / 2f, renderHeight).color(0xffffd34f).center().scale(scale(1.3f)).render();
+        float speakerLineWidth = 0;
+        for (String line : dialogueLines) {
+            speakerLineWidth = Math.max(GILText.width(line), speakerLineWidth);
+        }
+        speakerLineWidth *= 1.1f;
         if (entry.speakerTitle() != null && !entry.speakerTitle().isBlank()) {
             renderHeight += scale(16);
             GILText.textRender(context, entry.speakerTitle(), width / 2f, renderHeight).color(0xffe9b94f).center().scale(scale(1f)).render();
-            // TODO: 名称称号两侧的装饰线
+            float speakerWidth = GILText.width(entry.speakerTitle()) + 10;
+            context.getMatrices().pushMatrix();
+            context.getMatrices().translate(width / 2f - speakerLineWidth / 4f - speakerWidth / 4f, renderHeight + 3);
+            context.getMatrices().scale((speakerLineWidth - speakerWidth) / 4f, 0.3f);
+            context.fill(-1, -1, 1, 1, 0xfffcd04e);
+            context.getMatrices().popMatrix();
+            context.getMatrices().pushMatrix();
+            context.getMatrices().translate(width / 2f + speakerLineWidth / 4f + speakerWidth / 4f, renderHeight + 3);
+            context.getMatrices().scale((speakerLineWidth - speakerWidth) / 4f, 0.3f);
         } else {
-            // TODO: 名称与正文间的分割线
+            renderHeight += scale(8);
+            context.getMatrices().pushMatrix();
+            context.getMatrices().translate(width / 2f, renderHeight + 7);
+            context.getMatrices().scale(speakerLineWidth / 2f, 0.2f);
         }
+        context.fill(-1, -1, 1, 1, 0xfffcd04e);
+        context.getMatrices().popMatrix();
         return renderHeight;
     }
 
@@ -275,7 +385,7 @@ public final class DialogueScreen extends Screen {
             float x = (1 - scale(1 - DialogueRegionHint.OPTION_ANCHOR_X)) * width;
             boolean mouseHover = x <= mouseX && mouseX <= x + scale(0.95 - DialogueRegionHint.OPTION_ANCHOR_X) * width && y <= mouseY && mouseY <= y + scale(DialogueRegionHint.OPTION_HEIGHT);
             context.getMatrices().pushMatrix();
-            context.getMatrices().translate(option_offset, 0);
+            context.getMatrices().translate(optionOffset, 0);
             DialogueRegionHint.renderOption(context, (int) x, (int) y, option.text(), option.icon(), mouseHover, index == keyboardSelectedOption);
             context.getMatrices().popMatrix();
             y -= scale(DialogueRegionHint.OPTION_HEIGHT + DialogueRegionHint.OPTION_GAP);
@@ -289,6 +399,11 @@ public final class DialogueScreen extends Screen {
             context.getMatrices().pushMatrix();
             context.getMatrices().translate(16f, 16f);
             context.getMatrices().scale(7.9f);
+            long now = Util.getMeasuringTimeMs();
+            boolean target = 8f < mouseX && 24f > mouseX && 8f < mouseY && 24f > mouseY && !buttonManager.buttonDisabled.getOrDefault("autoplay", false);
+            long started = buttonManager.hoverStartTimes.getOrDefault("autoplay", now);
+            float p = MathHelper.clamp((float) (now - started) / 80.0f, 0.0f, 1.0f);
+            context.getMatrices().scale((target ? p : 1.0f - p) * 0.1f + 1.0f);
             context.getMatrices().rotate((float) Math.toRadians(-System.currentTimeMillis() / 3d % 360));
             context.drawTexturedQuad(dialogue.entry(entryId).options().isEmpty() ? Identifier.of(RegionStoryMod.MOD_ID, "textures/gui/autoplay.png") : Identifier.of(RegionStoryMod.MOD_ID, "textures/gui/autoplay_disabled.png"), -1, -1, 1, 1, 0, 1, 0, 1);
             context.getMatrices().popMatrix();
@@ -300,6 +415,8 @@ public final class DialogueScreen extends Screen {
     }
 
     private float scale(double number) {return (float) (RegionStoryClient.config.scale * number);}
+
+    private int transparent(int alpha, int color) {return alpha << 24 | color;}
 
     private List<String> splitText(String text){
         int limit = width - (int) scale(DIALOGUE_SIDE_PADDING * 2);
@@ -329,7 +446,7 @@ public final class DialogueScreen extends Screen {
             buttonManager.setButtonDisabled("autoplay", !dialogue.entry(entryId).options().isEmpty());
             history.add(new HistoryItem(dialogue.entry(entryId).speaker(), dialogue.entry(entryId).text()));
 
-            option_offset = OPTION_TRANSITION;
+            optionOffset = OPTION_TRANSITION;
         }
     }
 

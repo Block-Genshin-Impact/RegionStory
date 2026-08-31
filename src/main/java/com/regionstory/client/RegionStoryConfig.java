@@ -7,6 +7,7 @@ import me.shedaniel.autoconfig.annotation.ConfigEntry;
 
 @Config(name = RegionStoryMod.MOD_ID)
 public class RegionStoryConfig implements ConfigData {
+    public boolean allow_force_exit = false;
     public boolean autoplay = false;
     public float autoplayDelay = 1f;
     public float scale = 0.8f;
