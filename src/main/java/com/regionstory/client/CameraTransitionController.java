@@ -34,10 +34,10 @@ public final class CameraTransitionController {
 
     public static void tick(MinecraftClient client) {
         if (mode == Mode.IDLE) return;
-        if (mode == Mode.ENTERING && getTicks() >= RegionStoryConfig.enterDuration) {
+        if (mode == Mode.ENTERING && getTicks() >= RegionStoryClient.config.camera.enterDuration) {
             mode = Mode.DIALOGUE;
         }
-        if (mode == Mode.EXITING && getTicks() >= RegionStoryConfig.exitDuration) {
+        if (mode == Mode.EXITING && getTicks() >= RegionStoryClient.config.camera.exitDuration) {
             client.options.setPerspective(previousPerspective);
             mode = Mode.IDLE;
         }
@@ -45,10 +45,6 @@ public final class CameraTransitionController {
 
     public static boolean active() {
         return mode != Mode.IDLE;
-    }
-
-    public static boolean dialogueActive() {
-        return mode == Mode.ENTERING || mode == Mode.DIALOGUE || mode == Mode.EXITING;
     }
 
     public static void reset(MinecraftClient client) {
@@ -62,10 +58,10 @@ public final class CameraTransitionController {
 
         // 使用 smoothstep 让进入和退出的速度在首尾自然收敛，避免镜头突然加速。
         double progress = mode == Mode.EXITING
-                ? 1.0D - MathHelper.clamp(getTicks() / (double) RegionStoryConfig.exitDuration, 0.0D, 1.0D)
-                : MathHelper.clamp(getTicks() / (double) RegionStoryConfig.enterDuration, 0.0D, 1.0D);
+                ? 1.0D - MathHelper.clamp(getTicks() / (double) RegionStoryClient.config.camera.exitDuration, 0.0D, 1.0D)
+                : MathHelper.clamp(getTicks() / (double) RegionStoryClient.config.camera.enterDuration, 0.0D, 1.0D);
         double eased = progress * progress * (3.0D - 2.0D * progress);
-        double distance = RegionStoryConfig.thirdPersonDistance * eased;
+        double distance = RegionStoryClient.config.camera.thirdPersonDistance * eased;
         // 从玩家的水平朝向构建局部坐标：正 yawOffset 永远是“玩家右后方”，
         // 不再依赖世界坐标角度，从而避免镜头跑到人物正前方。
         Vec3d forward = focusedEntity.getRotationVec(1.0F);
@@ -76,19 +72,19 @@ public final class CameraTransitionController {
         }
         Vec3d backward = horizontalForward.negate();
         Vec3d right = new Vec3d(-horizontalForward.z, 0.0D, horizontalForward.x);
-        double offset = Math.toRadians(RegionStoryConfig.yawOffset * eased);
+        double offset = Math.toRadians(RegionStoryClient.config.camera.yawOffset * eased);
         Vec3d cameraOffset = backward.multiply(Math.cos(offset) * distance)
                 .add(right.multiply(Math.sin(offset) * distance)).add(backward.normalize().multiply(0.5));
         double x = focusedEntity.getX() + cameraOffset.x;
         double z = focusedEntity.getZ() + cameraOffset.z;
         double y = focusedEntity.getY() + focusedEntity.getStandingEyeHeight()
-                + RegionStoryConfig.heightOffset * eased;
+                + RegionStoryClient.config.camera.heightOffset * eased;
 
-        CameraAccessor accessor = (CameraAccessor) (Object) camera;
+        CameraAccessor accessor = (CameraAccessor) camera;
         accessor.regionstory$setPos(x, y, z);
         accessor.regionstory$setRotation(
-                focusedEntity.getYaw() - RegionStoryConfig.yawOffset * (float) eased,
-                RegionStoryConfig.pitchOffset * (float) eased);
+                focusedEntity.getYaw() - RegionStoryClient.config.camera.yawOffset * (float) eased,
+                RegionStoryClient.config.camera.pitchOffset * (float) eased);
     }
 
     private CameraTransitionController() {
