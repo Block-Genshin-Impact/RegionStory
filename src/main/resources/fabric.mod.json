@@ -9,8 +9,7 @@
   "environment": "*",
   "entrypoints": {
     "main": ["com.regionstory.RegionStoryMod"],
-    "client": ["com.regionstory.client.RegionStoryClient"],
-    "modmenu": ["com.regionstory.client.RegionStortModMenuIntegration"]
+    "client": ["com.regionstory.client.RegionStoryClient"]
   },
   "mixins": [
     "regionstory.mixins.json"

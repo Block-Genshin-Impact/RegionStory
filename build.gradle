@@ -11,8 +11,6 @@ base { archivesName = project.archives_base_name }
 repositories {
     maven { url = 'https://maven.fabricmc.net/' }
     mavenCentral()
-    maven { url "https://maven.shedaniel.me/" }
-    maven { url "https://maven.terraformersmc.com/releases/" }
     flatDir {dir "lib"}
 }
 
@@ -21,9 +19,7 @@ dependencies {
     mappings "net.fabricmc:yarn:${project.yarn_mappings}:v2"
     modImplementation "net.fabricmc:fabric-loader:${project.loader_version}"
     modImplementation "net.fabricmc.fabric-api:fabric-api:${project.fabric_version}"
-    modImplementation files("lib/GenshinLib-1.1.jar")
-    modImplementation "com.terraformersmc:modmenu:${project.modmenu_version}"
-    modApi("me.shedaniel.cloth:cloth-config-fabric:${clothconfig_version}") {exclude(group: "net.fabricmc.fabric-api")}
+    modImplementation files("lib/GenshinLib-1.0-SNAPSHOT.jar")
 }
 
 processResources {
